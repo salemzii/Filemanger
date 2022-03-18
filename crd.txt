@@ -1,0 +1,9 @@
+consumer_key : MT9Ep5v3EIbvqUt3RcepDFRa4
+consumer_secret : 5rPzZOoKfjxCeyGuj9foJvG5WPp2KtvV2DCr78TLzOiDXo9tpB
+
+
+https://api.twitter.com/SalemZii/status/1499403561742045184?s=20&t=pH6ptjm6iFKREFdeUCZ65A
+
+access_token : 1194011008735559686-avYlmfcrbJfu91WsfS1x63qMHE2Wgh
+token_secret : JCr4aNci9lezWKvbBjo9v9lsUiH19rCPSAXeI4bcmbNtX
+bearer_token : Bearer AAAAAAAAAAAAAAAAAAAAAEMIaAEAAAAAMFa82YQWqtKV3qSetdowN%2FV9avA%3DniIQuHgi8GJWp0jrbvMmIWYkmT7vl2sP3lScHRzhvMKW4vfPzT
