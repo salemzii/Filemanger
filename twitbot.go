@@ -2,13 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -17,35 +16,11 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
-var BASE_URL, PARAMS, FILE_LINK, AUTH, BUCKET, REGION, UPLOADED_FILE_BASE_URI string
-
-var s3sess *s3.S3
-var sesss *session.Session
-
-func init() {
-
-	REGION = os.Getenv("REGION")
-	BUCKET = os.Getenv("BUCKET")
-
-	sesss := session.Must(session.NewSession(&aws.Config{
-		Region: aws.String(REGION),
-	}))
-
-	s3sess = s3.New(sesss)
-
-	BASE_URL = "https://api.twitter.com/2/tweets/"
-
-	PARAMS = "?expansions=attachments.media_keys&media.fields=url"
-
-	FILE_LINK = "https://twitter.com/0x/status/1500560662933774342?s=20&t=yQ9z8sR7cvuLzmkBDhsB0g"
-	UPLOADED_FILE_BASE_URI = "https://salems-test-bucket.s3.eu-west-3.amazonaws.com/"
-	AUTH = os.Getenv("TWITTER_BEARER")
-}
-
 func Formats3link(k string) string {
 	return fmt.Sprintf("https://%v.s3-%v.amazonaws.com/%v", BUCKET, REGION, k)
 }
 
+// Structfield to represent our uploaded file meta-data
 type UploadInfo struct {
 	Key     string
 	Uri     string
@@ -53,6 +28,8 @@ type UploadInfo struct {
 	Size    int64
 	Type    string
 }
+
+// Structfields representing twitter response body
 type Media struct {
 	Media_Key string
 	Type      string
@@ -74,12 +51,20 @@ type Data struct {
 	Includes    Includes
 }
 
-func main() {
-	fmt.Println(fetch_tweet(FILE_LINK))
+//Struct type for representing events
+type TweetImage struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Url         string `json:"url"`
 }
 
-func fetch_tweet(url string) (*Data, []byte, error) {
-	idls := strings.Split(url, "/")
+// function to fetch, manipulate and upload media obj to our s3 bucket.
+func Fetch_tweet(ctx context.Context, event TweetImage) (*Data, error) {
+	/*
+		most url to be inputted by users are most likely to be in the twitter v1 api
+		format, so we parse the tweet id into the twitter v2 api url format.
+	*/
+	idls := strings.Split(event.Url, "/")
 	baseid := idls[len(idls)-1]
 	baseidls := strings.Split(baseid, "?")
 	uri := BASE_URL + baseidls[0] + PARAMS
@@ -94,7 +79,7 @@ func fetch_tweet(url string) (*Data, []byte, error) {
 
 	req.Header = http.Header{
 		"Content-Type":  []string{"application/json"},
-		"Authorization": []string{"Bearer AAAAAAAAAAAAAAAAAAAAAEMIaAEAAAAAMFa82YQWqtKV3qSetdowN%2FV9avA%3DniIQuHgi8GJWp0jrbvMmIWYkmT7vl2sP3lScHRzhvMKW4vfPzT"},
+		"Authorization": []string{AUTH},
 	}
 	data := new(Data)
 	res, err := client.Do(req)
@@ -102,82 +87,76 @@ func fetch_tweet(url string) (*Data, []byte, error) {
 		log.Fatal(err)
 	}
 	defer res.Body.Close()
+
+	// decode the response body to a  bytes
 	respByte, err := ioutil.ReadAll(res.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// decode bytes response to a readable string
 	respStr := string(respByte)
 	fmt.Println(respStr)
 
+	// decode byte response to our data struct
 	e := json.Unmarshal(respByte, &data)
 	if e != nil {
 		log.Fatal(e)
 	}
-	img, err := GetImage(data.Includes.Media[0].Url)
-	if err != nil {
-		log.Fatal(err)
+
+	// find the media url in the data struct and send it to the getImage function for fetching img
+	if len(data.Includes.Media) >= 1 {
+
+		for i := 0; i < len(data.Includes.Media); i++ {
+			err := FetchImage(data.Includes.Media[i].Url)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Println("File url -------")
+			fmt.Println((data.Includes.Media[i].Url))
+		}
 	}
-	return data, img, nil
+
+	return data, nil
 }
 
-func GetImage(url string) (bytes []byte, err error) {
+func FetchImage(url string) (err error) {
 
 	resp, err := http.Get(url)
-
-	if err != nil {
-		return bytes, err
-	}
-	defer resp.Body.Close()
-
-	file, err := os.Create("twitimage.png")
-
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer file.Close()
-	_, err = io.Copy(file, resp.Body)
-	err = uploadFile(sesss, "twitimage.png")
-	if err != nil {
-		log.Fatal(err)
-	}
-	return ioutil.ReadAll(resp.Body)
-}
-
-func uploadFile(session *session.Session, uploadFileDir string) error {
-
-	curr_dir, err := os.Getwd()
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(curr_dir)
-	upFle := curr_dir + "/" + uploadFileDir
-
-	upFile, err := os.Open(upFle)
 	if err != nil {
 		return err
 	}
-	defer upFile.Close()
+	defer resp.Body.Close()
+	// upload file to s3
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err = UploadImage(sesss, resp.ContentLength, body); err != nil {
+		log.Fatal(err)
+	}
 
-	upFileInfo, _ := upFile.Stat()
-	var fileSize int64 = upFileInfo.Size()
+	return nil
+}
 
+// function to upload file to s3
+func UploadImage(session *session.Session, contentLength int64, body []byte) error {
+
+	imageName := RandStringRunes(10) + ".png"
 	uploadInfo := &UploadInfo{
-		Key:     uploadFileDir,
+		Key:     imageName,
 		Created: time.Now(),
-		Uri:     UPLOADED_FILE_BASE_URI + uploadFileDir,
-		Size:    fileSize,
+		Uri:     UPLOADED_FILE_BASE_URI + imageName,
+		Size:    contentLength,
 	}
 	fmt.Println(uploadInfo)
-	fileBuffer := make([]byte, fileSize)
-	upFile.Read(fileBuffer)
-
-	_, err = s3sess.PutObject(&s3.PutObjectInput{
+	_, err := s3sess.PutObject(&s3.PutObjectInput{
 		Bucket:               aws.String(BUCKET),
-		Key:                  aws.String(uploadFileDir),
+		Key:                  aws.String(imageName),
 		ACL:                  aws.String("private"),
-		Body:                 bytes.NewReader(fileBuffer),
-		ContentLength:        aws.Int64(fileSize),
-		ContentType:          aws.String(http.DetectContentType(fileBuffer)),
+		Body:                 bytes.NewReader(body),
+		ContentLength:        aws.Int64(contentLength),
+		ContentType:          aws.String(http.DetectContentType(body)),
 		ContentDisposition:   aws.String("attachment"),
 		ServerSideEncryption: aws.String("AES256"),
 	})
